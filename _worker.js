@@ -1,7 +1,10 @@
 // functions/_worker.js
 export default {
   async fetch(request, env, ctx) {
-    // -------------- 工具函数（原封不动搬进来） --------------
+    // 1. 从 Pages 控制台读取环境变量 U
+    const jsonUrl = (env.U || '').trim() || 'https://raw.githubusercontent.com/hafrey1/LunaTV-config/main/jingjian.json'
+
+    // -------------- 工具函数（原封不动） --------------
     const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
     function base58Encode(obj) {
       const str = JSON.stringify(obj)
@@ -53,7 +56,7 @@ export default {
     const currentOrigin = reqUrl.origin
     const defaultPrefix = currentOrigin + '/?url='
 
-    // ---------------- 代理逻辑（与原来完全一致） ----------------
+    // ---------------- 代理逻辑（与原来一致） ----------------
     if (targetUrlParam) {
       let fullTargetUrl = targetUrlParam
       const urlMatch = request.url.match(/[?&]url=([^&]+(?:&.*)?)/)
@@ -96,9 +99,9 @@ export default {
       }
     }
 
+    // ---------------- JSON 配置接口（改用 jsonUrl） ----------------
     if (configParam === '1') {
       try {
-        const jsonUrl = 'https://raw.githubusercontent.com/hafrey1/LunaTV-config/main/jingjian.json'
         const data = await (await fetch(jsonUrl)).json()
         const newData = addOrReplacePrefix(data, prefixParam || defaultPrefix)
         if (encodeParam === 'base58') {
@@ -113,7 +116,6 @@ export default {
 
     if (configParam === '0') {
       try {
-        const jsonUrl = 'https://raw.githubusercontent.com/hafrey1/LunaTV-config/main/jingjian.json'
         const data = await (await fetch(jsonUrl)).json()
         if (encodeParam === 'base58') {
           return new Response(base58Encode(data), { headers: { 'Content-Type': 'text/plain;charset=UTF-8', ...corsHeaders } })
