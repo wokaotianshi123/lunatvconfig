@@ -1,7 +1,7 @@
-// ---------------------- 改造后的 _worker (zj).js ----------------------
+// ----------------------  带复制按钮的完整版 _worker (zj).js  ----------------------
 export default {
   async fetch(request, env, ctx) {
-    /* ========== 1. 决定远程 JSON 地址 ========== */
+    /* ===== 1. 地址选择：U 优先 → 再按 source 选默认 ===== */
     const DEFAULT_JSON_SOURCES = {
       jin18:
         'https://raw.githubusercontent.com/hafrey1/LunaTV-config/refs/heads/main/jin18.json',
@@ -10,17 +10,14 @@ export default {
       full:
         'https://raw.githubusercontent.com/hafrey1/LunaTV-config/refs/heads/main/LunaTV-config.json',
     };
-
-    // 环境变量 U 优先
     let jsonUrl = (env.U || '').trim();
+    const reqUrl = new URL(request.url);
+    const sourceParam = reqUrl.searchParams.get('source');
     if (!jsonUrl) {
-      // 没配 U 就走 source 参数
-      const reqUrl = new URL(request.url);
-      const source = reqUrl.searchParams.get('source'); // 与 (d).js 保持一致
-      jsonUrl = DEFAULT_JSON_SOURCES[source] || DEFAULT_JSON_SOURCES.full;
+      jsonUrl = DEFAULT_JSON_SOURCES[sourceParam] || DEFAULT_JSON_SOURCES.full;
     }
 
-    /* ========== 2. 工具函数（从 (d).js 完整迁移） ========== */
+    /* ===== 2. 工具函数（与 d.js 完全一致） ===== */
     const BASE58_ALPHABET =
       '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
     function base58Encode(obj) {
@@ -34,7 +31,6 @@ export default {
         result = BASE58_ALPHABET[Number(mod)] + result;
         intVal = intVal / 58n;
       }
-      // 处理前导 0
       for (const b of bytes) {
         if (b === 0) result = BASE58_ALPHABET[0] + result;
         else break;
@@ -61,7 +57,7 @@ export default {
       return newObj;
     }
 
-    /* ========== 3. CORS 通用头 ========== */
+    /* ===== 3. CORS ===== */
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
@@ -71,15 +67,11 @@ export default {
     if (request.method === 'OPTIONS')
       return new Response(null, { status: 204, headers: corsHeaders });
 
-    const reqUrl = new URL(request.url);
-    const targetUrlParam = reqUrl.searchParams.get('url');
-    const configParam = reqUrl.searchParams.get('config'); // 0 原始  1 加前缀
-    const prefixParam = reqUrl.searchParams.get('prefix');
-    const encodeParam = reqUrl.searchParams.get('encode'); // base58
     const currentOrigin = reqUrl.origin;
     const defaultPrefix = currentOrigin + '/?url=';
 
-    /* ========== 4. 代理任意 URL（与 (d).js 相同） ========== */
+    /* ===== 4. 代理任意 URL ===== */
+    const targetUrlParam = reqUrl.searchParams.get('url');
     if (targetUrlParam) {
       let fullTargetUrl = targetUrlParam;
       const urlMatch = request.url.match(/[?&]url=([^&]+(?:&.*)?)/);
@@ -104,7 +96,7 @@ export default {
             : undefined,
         });
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
         const response = await fetch(proxyRequest, { signal: controller.signal });
         clearTimeout(timeoutId);
 
@@ -143,17 +135,44 @@ export default {
       }
     }
 
-    /* ========== 5. JSON 配置接口 ========== */
-    if (configParam === '1') {
+    /* ===== 5. 配置接口：优先新风格（format+source），再兼容老风格（config+encode） ===== */
+    const formatParam = reqUrl.searchParams.get('format');
+    const prefixParam = reqUrl.searchParams.get('prefix');
+
+    const FORMAT_MAP = {
+      '0': 'raw',
+      '1': 'proxy',
+      '2': 'base58',
+      '3': 'proxy-base58',
+      raw: 'raw',
+      proxy: 'proxy',
+      base58: 'base58',
+      'proxy-base58': 'proxy-base58',
+    };
+
+    let mode = null;
+    if (formatParam !== null && FORMAT_MAP[formatParam]) {
+      mode = FORMAT_MAP[formatParam];
+    } else {
+      const configParam = reqUrl.searchParams.get('config');
+      const encodeParam = reqUrl.searchParams.get('encode');
+      if (configParam === '0') mode = encodeParam === 'base58' ? 'base58' : 'raw';
+      if (configParam === '1') mode = encodeParam === 'base58' ? 'proxy-base58' : 'proxy';
+    }
+
+    if (mode) {
       try {
         const data = await (await fetch(jsonUrl)).json();
-        const newData = addOrReplacePrefix(data, prefixParam || defaultPrefix);
-        if (encodeParam === 'base58') {
-          return new Response(base58Encode(newData), {
+        let outData = data;
+        if (mode === 'proxy' || mode === 'proxy-base58') {
+          outData = addOrReplacePrefix(data, prefixParam || defaultPrefix);
+        }
+        if (mode === 'base58' || mode === 'proxy-base58') {
+          return new Response(base58Encode(outData), {
             headers: { 'Content-Type': 'text/plain;charset=UTF-8', ...corsHeaders },
           });
         } else {
-          return new Response(JSON.stringify(newData), {
+          return new Response(JSON.stringify(outData), {
             headers: { 'Content-Type': 'application/json;charset=UTF-8', ...corsHeaders },
           });
         }
@@ -165,27 +184,7 @@ export default {
       }
     }
 
-    if (configParam === '0') {
-      try {
-        const data = await (await fetch(jsonUrl)).json();
-        if (encodeParam === 'base58') {
-          return new Response(base58Encode(data), {
-            headers: { 'Content-Type': 'text/plain;charset=UTF-8', ...corsHeaders },
-          });
-        } else {
-          return new Response(JSON.stringify(data), {
-            headers: { 'Content-Type': 'application/json;charset=UTF-8', ...corsHeaders },
-          });
-        }
-      } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json;charset=UTF-8', ...corsHeaders },
-        });
-      }
-    }
-
-    /* ========== 6. 首页说明 ========== */
+    /* ===== 6. 首页说明（完全迁移 _worker (d).js 的 HTML+复制按钮） ===== */
     const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -195,6 +194,7 @@ export default {
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;max-width:800px;margin:50px auto;padding:20px;line-height:1.6}
 h1{color:#333}
+h2{color:#555;margin-top:30px}
 code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-size:14px}
 pre{background:#f4f4f4;padding:15px;border-radius:5px;overflow-x:auto}
 .example{background:#e8f5e9;padding:15px;border-left:4px solid #4caf50;margin:20px 0}
@@ -202,6 +202,8 @@ pre{background:#f4f4f4;padding:15px;border-radius:5px;overflow-x:auto}
 table{width:100%;border-collapse:collapse;margin:15px 0}
 table td{padding:8px;border:1px solid #ddd}
 table td:first-child{background:#f5f5f5;font-weight:bold;width:30%}
+.copy-btn{cursor:pointer;margin-left:8px;padding:2px 8px;background:#4caf50;color:#fff;border:none;border-radius:3px;font-size:12px}
+.copy-btn:hover{background:#45a049}
 </style>
 </head>
 <body>
@@ -215,36 +217,42 @@ table td:first-child{background:#f5f5f5;font-weight:bold;width:30%}
 <h2>配置订阅参数说明</h2>
 <div class="section">
 <table>
-<tr><td>config</td><td><code>0</code> = 原始 JSON<br><code>1</code> = 添加代理前缀</td></tr>
-<tr><td>encode</td><td>留空 = 原始 JSON<br><code>base58</code> = Base58 编码输出</td></tr>
-<tr><td>prefix</td><td>自定义代理前缀（仅在 config=1 时生效）</td></tr>
-<tr><td>source</td><td><code>jin18</code> = 精简版<br><code>jingjian</code> = 精简版+成人<br><code>full</code> = 完整版（默认）</td></tr>
+<tr><td>format</td>
+<td><code>0</code> 或 <code>raw</code> = 原始 JSON<br>
+    <code>1</code> 或 <code>proxy</code> = 添加代理前缀<br>
+    <code>2</code> 或 <code>base58</code> = 原始 Base58 编码<br>
+    <code>3</code> 或 <code>proxy-base58</code> = 代理 Base58 编码</td></tr>
+<tr><td>source</td>
+<td><code>jin18</code> = 精简版<br>
+    <code>jingjian</code> = 精简版+成人<br>
+    <code>full</code> = 完整版（默认）</td></tr>
+<tr><td>prefix</td><td>自定义代理前缀（仅在 format=1 或 3 时生效）</td></tr>
 </table>
 </div>
 
 <h2>配置订阅链接示例</h2>
 <div class="section">
 <h3>📦 精简版（jin18）</h3>
-<p>原始 JSON：<br><code>${currentOrigin}?config=0&source=jin18</code></p>
-<p>中转代理 JSON：<br><code>${currentOrigin}?config=1&source=jin18</code></p>
-<p>原始 Base58：<br><code>${currentOrigin}?config=0&encode=base58&source=jin18</code></p>
-<p>中转 Base58：<br><code>${currentOrigin}?config=1&encode=base58&source=jin18</code></p>
+<p>原始 JSON：<br><code class="copyable">${currentOrigin}?format=0&source=jin18</code> <button class="copy-btn">复制</button></p>
+<p>中转代理 JSON：<br><code class="copyable">${currentOrigin}?format=1&source=jin18</code> <button class="copy-btn">复制</button></p>
+<p>原始 Base58：<br><code class="copyable">${currentOrigin}?format=2&source=jin18</code> <button class="copy-btn">复制</button></p>
+<p>中转 Base58：<br><code class="copyable">${currentOrigin}?format=3&source=jin18</code> <button class="copy-btn">复制</button></p>
 </div>
 
 <div class="section">
 <h3>📦 精简版+成人（jingjian）</h3>
-<p>原始 JSON：<br><code>${currentOrigin}?config=0&source=jingjian</code></p>
-<p>中转代理 JSON：<br><code>${currentOrigin}?config=1&source=jingjian</code></p>
-<p>原始 Base58：<br><code>${currentOrigin}?config=0&encode=base58&source=jingjian</code></p>
-<p>中转 Base58：<br><code>${currentOrigin}?config=1&encode=base58&source=jingjian</code></p>
+<p>原始 JSON：<br><code class="copyable">${currentOrigin}?format=0&source=jingjian</code> <button class="copy-btn">复制</button></p>
+<p>中转代理 JSON：<br><code class="copyable">${currentOrigin}?format=1&source=jingjian</code> <button class="copy-btn">复制</button></p>
+<p>原始 Base58：<br><code class="copyable">${currentOrigin}?format=2&source=jingjian</code> <button class="copy-btn">复制</button></p>
+<p>中转 Base58：<br><code class="copyable">${currentOrigin}?format=3&source=jingjian</code> <button class="copy-btn">复制</button></p>
 </div>
 
 <div class="section">
 <h3>📦 完整版（full，默认）</h3>
-<p>原始 JSON：<br><code>${currentOrigin}?config=0&source=full</code></p>
-<p>中转代理 JSON：<br><code>${currentOrigin}?config=1&source=full</code></p>
-<p>原始 Base58：<br><code>${currentOrigin}?config=0&encode=base58&source=full</code></p>
-<p>中转 Base58：<br><code>${currentOrigin}?config=1&encode=base58&source=full</code></p>
+<p>原始 JSON：<br><code class="copyable">${currentOrigin}?format=0&source=full</code> <button class="copy-btn">复制</button></p>
+<p>中转代理 JSON：<br><code class="copyable">${currentOrigin}?format=1&source=full</code> <button class="copy-btn">复制</button></p>
+<p>原始 Base58：<br><code class="copyable">${currentOrigin}?format=2&source=full</code> <button class="copy-btn">复制</button></p>
+<p>中转 Base58：<br><code class="copyable">${currentOrigin}?format=3&source=full</code> <button class="copy-btn">复制</button></p>
 </div>
 
 <h2>支持的功能</h2>
@@ -256,8 +264,20 @@ table td:first-child{background:#f5f5f5;font-weight:bold;width:30%}
 <li>✅ 超时保护（30 秒）</li>
 <li>✅ 支持多种配置源切换</li>
 <li>✅ 支持 Base58 编码输出</li>
-<li>✅ 环境变量 U 自定义 JSON 地址</li>
+<li>✅ 支持环境变量 U 自定义 JSON 地址</li>
 </ul>
+
+<script>
+document.querySelectorAll('.copy-btn').forEach((btn, idx) => {
+  btn.addEventListener('click', () => {
+    const text = document.querySelectorAll('.copyable')[idx].innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.innerText = '已复制！';
+      setTimeout(() => (btn.innerText = '复制'), 1500);
+    });
+  });
+});
+</script>
 </body>
 </html>`;
     return new Response(html, {
